@@ -6,8 +6,12 @@ import numpy as np
 from typing import List, Dict, Any, Optional
 import uvicorn
 from pydantic import BaseModel
+from elasticsearch import Elasticsearch
 
 app = FastAPI(title="合同模板相似度查询API", description="查询与输入文本最相似的合同模板")
+es_host = "http://192.168.10.202:9200/"
+es_index = "contract_templates"
+es = Elasticsearch([es_host])
 
 vector_data = None
 
@@ -17,13 +21,69 @@ class TextRequest(BaseModel):
     text1: str  
     text2: str  
     text3: str 
-    text4: str  
+    text4: str
+    top_k: Optional[int] = 3 
 
-class TemplateResponse(BaseModel):
-    templates: List[str]
-    scores: List[float]
-    category_scores: List[Dict[str, float]]
-    similarities: Dict[str, List[float]]
+    template1_weight: Optional[float] = 4.0
+    template2_weight: Optional[float] = 4.0
+    text1_weight: Optional[float] = 0.276
+    text2_weight: Optional[float] = 0.276
+    text3_weight: Optional[float] = 0.184 
+    text4_weight: Optional[float] = 0.184 
+
+class TemplateItem(BaseModel):
+    template: str
+    template1: float
+    template2: float
+    parts: Dict[str, float]
+    fulltext: str
+
+def check_es_connection():
+    """检查ES连接状态"""
+    try:
+        if not es.ping():
+            raise HTTPException(status_code=500, detail="无法连接到Elasticsearch服务器")
+        
+        if not es.indices.exists(index=es_index):
+            raise HTTPException(status_code=500, detail=f"索引 {es_index} 不存在")
+
+        count = es.count(index=es_index)
+        print(f"成功连接到ES，索引 {es_index} 中共有 {count['count']} 条文档")
+        return count['count']
+    except Exception as e:
+        print(f"ES连接错误: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Elasticsearch连接错误: {str(e)}")
+
+
+def get_all_templates_from_es():
+    """从ES获取所有模板数据"""
+    try:
+        result = []
+        resp = es.search(
+            index=es_index,
+            body={
+                "query": {"match_all": {}},
+                "size": 100
+            },
+            scroll="2m"
+        )
+        
+        scroll_id = resp['_scroll_id']
+        hits = resp['hits']['hits']
+        
+        while len(hits) > 0:
+            for hit in hits:
+                result.append(hit['_source'])
+            
+            resp = es.scroll(scroll_id=scroll_id, scroll="2m")
+            scroll_id = resp['_scroll_id']
+            hits = resp['hits']['hits']
+        
+        print(f"从ES获取了 {len(result)} 条模板数据")
+        return result
+    except Exception as e:
+        print(f"从ES获取数据时出错: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"从ES获取数据失败: {str(e)}")
 
 def load_vector_data():
     global vector_data
@@ -153,12 +213,50 @@ def cosine_similarity(vec1: List[float], vec2: List[float]) -> float:
     
     return dot_product / (norm_vec1 * norm_vec2)
 
-@app.post("/find_similar_templates/", response_model=TemplateResponse)
+@app.post("/find_similar_templates/", response_model=List[TemplateItem])
 async def find_similar_templates(request: TextRequest):
+    # 从ES获取数据而不是加载本地文件
+    try:
+        # 检查ES连接
+        if not es.ping():
+            raise HTTPException(status_code=500, detail="无法连接到Elasticsearch服务器")
+        
+        if not es.indices.exists(index=es_index):
+            raise HTTPException(status_code=500, detail=f"索引 {es_index} 不存在")
+            
+        # 从ES获取所有模板数据
+        vector_data = []
+        resp = es.search(
+            index=es_index,
+            body={
+                "query": {"match_all": {}},
+                "size": 100
+            },
+            scroll="2m"
+        )
+        
+        scroll_id = resp['_scroll_id']
+        hits = resp['hits']['hits']
+        
+        while len(hits) > 0:
+            for hit in hits:
+                vector_data.append(hit['_source'])
+            
+            resp = es.scroll(scroll_id=scroll_id, scroll="2m")
+            scroll_id = resp['_scroll_id']
+            hits = resp['hits']['hits']
+        
+        print(f"从ES获取了 {len(vector_data)} 条模板数据")
+        
+        if not vector_data:
+            raise HTTPException(status_code=500, detail="未能从ES获取模板数据")
+    except Exception as e:
+        print(f"从ES获取数据时出错: {str(e)}")
+        # 如果ES获取失败，尝试使用本地文件作为备份
+        load_vector_data()
 
-    load_vector_data()
-
-    global vector_data
+        if not vector_data:
+            raise HTTPException(status_code=500, detail=f"无法获取模板数据: {str(e)}")
     
     input_vectors = {
         "text1": get_vector(request.text2),
@@ -167,11 +265,21 @@ async def find_similar_templates(request: TextRequest):
         "text4": get_vector(request.text4)
     }
     
+    weights = {
+        "template1": request.template1_weight,
+        "template2": request.template2_weight,
+        "text1": request.text1_weight,
+        "text2": request.text2_weight,
+        "text3": request.text3_weight,
+        "text4": request.text4_weight
+    }
+    
     scores = []
     for item in vector_data:
         template = item.get("template", "")
         template1 = item.get("template1", "")
         template2 = item.get("template2", "")
+        fulltext = item.get("fulltext", "")
 
         total_score = 0
         similarities = {
@@ -186,46 +294,51 @@ async def find_similar_templates(request: TextRequest):
             "template2": 0.0
         }
 
-        request_template1 = extract_chinese(request.template1)
-        request_template2 = extract_chinese(request.template2)
+        request_template1 = extract_chinese(request.template1) if request.template1 else ""
+        request_template2 = extract_chinese(request.template2) if request.template2 else ""
         
         if request_template1 and request_template1 == template1:
-            total_score += 4
-            category_score["template1"] = 4
+            total_score += weights["template1"]
+            category_score["template1"] = weights["template1"]
         
         if request_template2 and request_template2 == template2:
-            total_score += 4
-            category_score["template2"] = 4
+            total_score += weights["template2"]
+            category_score["template2"] = weights["template2"]
         
         vectors = item.get("vectors", {})
         
         for text_key in ["text1", "text2", "text3", "text4"]:
             if text_key in vectors and vectors[text_key]:
                 sim = cosine_similarity(input_vectors[text_key], vectors[text_key])
-                similarities[text_key] = sim * 100
+                similarities[text_key] = sim * weights[text_key] * 100
                 
-                if text_key in ["text1", "text2"]:
-                    total_score += sim * 27.6
-                elif text_key in ["text3", "text4"]:
-                    total_score += sim * 18.4
+                total_score += sim * weights[text_key]
         
-        scores.append((template, total_score, similarities, category_score))
+        scores.append({
+            "template": template,
+            "score": total_score,
+            "template1": category_score["template1"],
+            "template2": category_score["template2"],
+            "parts": similarities,
+            "fulltext": fulltext
+        })
+
+    scores.sort(key=lambda x: x["score"], reverse=True)
     
-    scores.sort(key=lambda x: x[1], reverse=True)
+    top_k = min(request.top_k, len(scores)) if request.top_k else 3
+    top_results = scores[:top_k]
     
-    top_templates = scores[:3]
+    result = []
+    for item in top_results:
+        result.append({
+            "template": item["template"],
+            "template1": item["template1"],
+            "template2": item["template2"],
+            "parts": item["parts"],
+            "fulltext": item["fulltext"]
+        })
     
-    return {
-        "templates": [item[0] for item in top_templates],
-        "scores": [item[1] for item in top_templates],
-        "category_scores": [item[3] for item in top_templates],
-        "similarities": {
-            "text1": [item[2]["text1"] for item in top_templates],
-            "text2": [item[2]["text2"] for item in top_templates],
-            "text3": [item[2]["text3"] for item in top_templates],
-            "text4": [item[2]["text4"] for item in top_templates]
-        }
-    }
+    return result
 
 @app.get("/health")
 async def health_check():
