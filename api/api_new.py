@@ -167,21 +167,62 @@ def load_vector_data():
         vector_data = []
         raise HTTPException(status_code=500, detail=f"加载向量数据失败: {e}")
 
-def get_vector(text: str, api_url: str = "http://192.168.10.58:8101/text2vector/") -> List[float]:
-    headers = {"Content-Type": "application/json"}
-    data = {"text": text}
+# def get_vector(text: str, api_url: str = "http://192.168.10.58:8032/text2vector/") -> List[float]:
+#     headers = {"Content-Type": "application/json"}
+#     data = {"text": text}
+    
+#     try:
+#         response = requests.post(api_url, headers=headers, json=data)
+#         if response.status_code == 200:
+#             response_data = response.json()
+#             if isinstance(response_data, dict) and "result" in response_data:
+#                 return response_data["result"]
+#             return response_data
+#         else:
+#             raise HTTPException(status_code=response.status_code, detail=f"向量服务请求失败: {response.text}")
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=f"向量服务请求异常: {str(e)}")
+
+def get_vector(input_text: str) -> List[float]:
+    """获取文本的向量表示
+    
+    Args:
+        input_text: 输入文本
+        
+    Returns:
+        List[float]: 文本的向量表示，如果请求失败返回None
+    """
+    # 将imports移到文件顶部
+    url = "https://ailab.pkulaw.com/api/openai/embeddings"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": "5df2069a02034877bda56ed136d7ccd4"
+    }
+    data = {
+        "model": "bge-m3-dense",
+        "input": input_text
+    }
     
     try:
-        response = requests.post(api_url, headers=headers, json=data)
-        if response.status_code == 200:
-            response_data = response.json()
-            if isinstance(response_data, dict) and "result" in response_data:
-                return response_data["result"]
-            return response_data
-        else:
-            raise HTTPException(status_code=response.status_code, detail=f"向量服务请求失败: {response.text}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"向量服务请求异常: {str(e)}")
+        response = requests.post(url, headers=headers, json=data, timeout=10)
+        response.raise_for_status()
+        response_data = response.json()
+        
+        if "data" in response_data and response_data["data"]:
+            return response_data["data"][0]["embedding"]
+            
+        print(f"警告: API返回数据格式异常: {response_data}")
+        return None
+        
+    except requests.exceptions.Timeout:
+        print("错误: API请求超时")
+        return None
+    except requests.exceptions.RequestException as e:
+        print(f"错误: API请求失败: {str(e)}")
+        return None
+    except json.JSONDecodeError as e:
+        print(f"错误: 解析API响应失败: {str(e)}")
+        return None
 
 def clean_text(text: str) -> str:
     text = text.strip()
@@ -347,5 +388,4 @@ async def health_check():
 
 if __name__ == "__main__":
     load_vector_data()
-    
     uvicorn.run(app, host="0.0.0.0", port=8031)

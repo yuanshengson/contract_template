@@ -116,7 +116,7 @@ def load_vector_data():
         vector_data = []
         raise HTTPException(status_code=500, detail=f"加载向量数据失败: {e}")
 
-def get_vector(text: str, api_url: str = "http://192.168.10.58:8101/text2vector/") -> List[float]:
+def get_vector(text: str, api_url: str = "http://192.168.10.58:8032/text2vector/") -> List[float]:
     headers = {"Content-Type": "application/json"}
     data = {"text": text}
     
@@ -259,4 +259,4 @@ async def health_check():
 if __name__ == "__main__":
     load_vector_data()
     
-    uvicorn.run(app, host="0.0.0.0", port=8031)
+    uvicorn.run(app, host="0.0.0.0", port=8033)

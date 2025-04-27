@@ -7,18 +7,27 @@ import argparse
 from tqdm import tqdm
 
 
-def get_vector(text, api_url="http://192.168.10.58:8101/text2vector/"):
-    headers = {"Content-Type": "application/json"}
-    data = {"text": text}
-    try:
-        response = requests.post(api_url, headers=headers, json=data)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            print(f"请求失败，状态码: {response.status_code}")
-            return None
-    except Exception as e:
-        print(f"请求异常: {e}")
+def get_vector(input):
+    import requests
+    import json
+    
+    url = "https://ailab.pkulaw.com/api/openai/embeddings"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": "5df2069a02034877bda56ed136d7ccd4"
+    }
+    data = {
+        "model": "bge-m3-dense",
+        "input": input
+    }
+    
+    response = requests.post(url, headers=headers, json=data)
+    response_data = response.json()
+    
+    if "data" in response_data and len(response_data["data"]) > 0:
+        embedding_vector = response_data["data"][0]["embedding"]
+        return embedding_vector
+    else:
         return None
 
 def process_csv(csv_file, output_file, template_column=0, template1_column=1, template2_column=2, 
@@ -137,7 +146,7 @@ def save_results(results, output_file, append=False):
             # 备份原文件
             if original_count > 0:
                 import shutil
-                backup_file = "/home/user/opt/ssy/contract_template/data/backup/vector_new.json" + ".backup." + time.strftime("%Y%m%d%H%M%S")
+                backup_file = "/home/user/opt/ssy/contract_template/data/backup/vector.json" + ".backup." + time.strftime("%Y%m%d%H%M%S")
                 shutil.copy2(output_file, backup_file)
                 print(f"已将原文件备份到 {backup_file}")
             
@@ -161,7 +170,7 @@ def save_results(results, output_file, append=False):
 def main():
     parser = argparse.ArgumentParser(description="批量处理CSV文件并获取向量")
     parser.add_argument("--csv", required=True, help="/home/user/opt/ssy/contract_template/data/contrac_csv/contract_new.csv.csv")
-    parser.add_argument("--output", default="/home/user/opt/ssy/contract_template/data/vector_data/vector_new.json", help="输出JSON文件路径")
+    parser.add_argument("--output", default="/home/user/opt/ssy/contract_template/data/vector_data/vector.json", help="输出JSON文件路径")
     parser.add_argument("--template-column", type=int, default=1, help="模板名称列索引（从0开始）")
     parser.add_argument("--template1-column", type=int, default=10, help="一级分类列索引（从0开始）")
     parser.add_argument("--template2-column", type=int, default=11, help="二级分类列索引（从0开始）")
@@ -195,6 +204,6 @@ def main():
 if __name__ == "__main__":
     main()
     """
-    python /home/user/opt/ssy/contract_template/embedding_new.py --csv /home/user/opt/ssy/contract_template/data/contract_new.csv --output /home/user/opt/ssy/contract_template/vector_new.json --batch-size 50 --append
+    python /home/user/opt/ssy/contract_template/embedding_new.py --csv /home/user/opt/ssy/contract_template/data/contract_new.csv --output /home/user/opt/ssy/contract_template/vector.json --batch-size 50 --append
 
     """
